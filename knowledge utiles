@@ -1,0 +1,487 @@
+"""
+Système de base de connaissances pour Rupella Consulting
+Permet d'ajouter des documents et les interroger via l'IA
+"""
+
+import os
+import json
+import logging
+from pathlib import Path
+from typing import List, Dict, Optional
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+class KnowledgeBase:
+    """Gestionnaire de base de connaissances"""
+
+    def __init__(self, documents_folder: str = "rupella_docs"):
+        """
+        Initialise la base de connaissances (supporte les sous-dossiers)
+
+        Args:
+            documents_folder: Dossier racine contenant les documents
+        """
+        self.docs_folder = documents_folder
+        self.index_file = os.path.join(documents_folder, "index.json")
+
+        # Créer le dossier s'il n'existe pas
+        os.makedirs(documents_folder, exist_ok=True)
+
+        # Créer les sous-dossiers recommandés
+        recommended_folders = ['services', 'tarifs', 'secteurs', 'commercial', 'clients']
+        for folder in recommended_folders:
+            os.makedirs(os.path.join(documents_folder, folder), exist_ok=True)
+
+        # Charger l'index
+        self.documents_index = self._load_index()
+
+    def _load_index(self) -> Dict:
+        """Charge l'index des documents"""
+        if os.path.exists(self.index_file):
+            try:
+                with open(self.index_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Erreur chargement index: {e}")
+        return {}
+
+    def _save_index(self):
+        """Sauvegarde l'index des documents"""
+        try:
+            with open(self.index_file, 'w', encoding='utf-8') as f:
+                json.dump(self.documents_index, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Erreur sauvegarde index: {e}")
+
+    def add_document(self, file_path: str, category: str = "general",
+                     description: str = "") -> bool:
+        """
+        Ajoute un document à la base de connaissances
+
+        Args:
+            file_path: Chemin vers le fichier
+            category: Catégorie (services, tarifs, process, equipe, etc.)
+            description: Description du document
+
+        Returns:
+            True si ajouté avec succès
+        """
+        try:
+            if not os.path.exists(file_path):
+                logger.error(f"Fichier introuvable: {file_path}")
+                return False
+
+            # Extraction du contenu selon le type
+            content = self._extract_content(file_path)
+
+            if not content:
+                logger.error(f"Impossible d'extraire le contenu de {file_path}")
+                return False
+
+            # Génération ID unique
+            doc_id = f"doc_{len(self.documents_index) + 1}"
+            filename = os.path.basename(file_path)
+
+            # Ajout à l'index
+            self.documents_index[doc_id] = {
+                "filename": filename,
+                "category": category,
+                "description": description,
+                "content": content,
+                "added_date": datetime.now().isoformat(),
+                "word_count": len(content.split())
+            }
+
+            self._save_index()
+            logger.info(f"✅ Document ajouté: {filename} ({category})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Erreur ajout document: {e}")
+            return False
+
+    def _extract_content(self, file_path: str) -> str:
+        """
+        Extrait le contenu d'un fichier
+
+        Args:
+            file_path: Chemin du fichier
+
+        Returns:
+            Contenu textuel
+        """
+        file_extension = Path(file_path).suffix.lower()
+
+        try:
+            # Fichiers texte
+            if file_extension in ['.txt', '.md']:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+
+            # Fichiers Word (.docx)
+            elif file_extension == '.docx':
+                try:
+                    import docx
+                    doc = docx.Document(file_path)
+                    return '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+                except ImportError:
+                    logger.warning("python-docx non installé, impossible de lire .docx")
+                    return ""
+
+            # Fichiers PDF
+            elif file_extension == '.pdf':
+                try:
+                    import PyPDF2
+                    with open(file_path, 'rb') as f:
+                        pdf_reader = PyPDF2.PdfReader(f)
+                        text = ""
+                        for page in pdf_reader.pages:
+                            text += page.extract_text()
+                        return text
+                except ImportError:
+                    logger.warning("PyPDF2 non installé, impossible de lire PDF")
+                    return ""
+
+            else:
+                logger.warning(f"Format non supporté: {file_extension}")
+                return ""
+
+        except Exception as e:
+            logger.error(f"Erreur extraction contenu: {e}")
+            return ""
+
+    def search_documents(self, query: str, category: Optional[str] = None) -> List[Dict]:
+        """
+        Recherche dans les documents
+
+        Args:
+            query: Terme de recherche
+            category: Filtrer par catégorie (optionnel)
+
+        Returns:
+            Liste des documents pertinents
+        """
+        results = []
+        query_lower = query.lower()
+
+        for doc_id, doc_data in self.documents_index.items():
+            # Filtre catégorie
+            if category and doc_data.get('category') != category:
+                continue
+
+            # Recherche dans le contenu
+            content = doc_data.get('content', '').lower()
+            if query_lower in content:
+                # Extraction d'un extrait pertinent
+                index = content.find(query_lower)
+                start = max(0, index - 150)
+                end = min(len(content), index + 150)
+                excerpt = content[start:end]
+
+                results.append({
+                    "doc_id": doc_id,
+                    "filename": doc_data.get('filename'),
+                    "category": doc_data.get('category'),
+                    "description": doc_data.get('description'),
+                    "excerpt": f"...{excerpt}...",
+                    "relevance": content.count(query_lower)
+                })
+
+        # Tri par pertinence
+        results.sort(key=lambda x: x['relevance'], reverse=True)
+        return results
+
+    def get_all_content(self, category: Optional[str] = None) -> str:
+        """
+        Récupère tout le contenu (pour contexte IA)
+
+        Args:
+            category: Filtrer par catégorie (optionnel)
+
+        Returns:
+            Contenu agrégé
+        """
+        content_parts = []
+
+        for doc_id, doc_data in self.documents_index.items():
+            if category and doc_data.get('category') != category:
+                continue
+
+            filename = doc_data.get('filename', 'Document')
+            category_name = doc_data.get('category', 'général')
+            content = doc_data.get('content', '')
+
+            content_parts.append(
+                f"=== {filename} ({category_name}) ===\n{content}\n"
+            )
+
+        return "\n\n".join(content_parts)
+
+    def get_document_by_id(self, doc_id: str) -> Optional[Dict]:
+        """
+        Récupère un document par son ID
+
+        Args:
+            doc_id: ID du document
+
+        Returns:
+            Données du document ou None
+        """
+        return self.documents_index.get(doc_id)
+
+    def list_documents(self, category: Optional[str] = None) -> List[Dict]:
+        """
+        Liste tous les documents
+
+        Args:
+            category: Filtrer par catégorie (optionnel)
+
+        Returns:
+            Liste des documents
+        """
+        docs = []
+        for doc_id, doc_data in self.documents_index.items():
+            if category and doc_data.get('category') != category:
+                continue
+
+            docs.append({
+                "doc_id": doc_id,
+                "filename": doc_data.get('filename'),
+                "category": doc_data.get('category'),
+                "description": doc_data.get('description'),
+                "word_count": doc_data.get('word_count'),
+                "added_date": doc_data.get('added_date')
+            })
+
+        return docs
+
+    def delete_document(self, doc_id: str) -> bool:
+        """
+        Supprime un document
+
+        Args:
+            doc_id: ID du document
+
+        Returns:
+            True si supprimé
+        """
+        if doc_id in self.documents_index:
+            filename = self.documents_index[doc_id].get('filename')
+            del self.documents_index[doc_id]
+            self._save_index()
+            logger.info(f"🗑️ Document supprimé: {filename}")
+            return True
+        return False
+
+    def get_categories(self) -> List[str]:
+        """
+        Liste les catégories disponibles
+
+        Returns:
+            Liste des catégories
+        """
+        categories = set()
+        for doc_data in self.documents_index.values():
+            categories.add(doc_data.get('category', 'general'))
+        return sorted(list(categories))
+
+    def get_context_for_query(self, query: str, max_words: int = 1000) -> str:
+        """
+        Récupère le contexte pertinent pour une question
+
+        Args:
+            query: Question de l'utilisateur
+            max_words: Nombre maximum de mots de contexte
+
+        Returns:
+            Contexte pertinent
+        """
+        # Recherche documents pertinents
+        results = self.search_documents(query)
+
+        if not results:
+            return ""
+
+        context_parts = []
+        total_words = 0
+
+        for result in results[:3]:  # Top 3 résultats
+            doc_id = result['doc_id']
+            doc = self.get_document_by_id(doc_id)
+
+            if doc:
+                content = doc.get('content', '')
+                words = content.split()
+
+                # Ajouter jusqu'à la limite
+                remaining_words = max_words - total_words
+                if remaining_words > 0:
+                    excerpt = ' '.join(words[:remaining_words])
+                    context_parts.append(
+                        f"📄 {result['filename']}:\n{excerpt}"
+                    )
+                    total_words += len(words[:remaining_words])
+
+        return "\n\n".join(context_parts)
+
+
+# Fonctions utilitaires pour créer la base initiale
+def create_initial_knowledge_base():
+    """Crée une base de connaissances initiale avec exemples"""
+    kb = KnowledgeBase()
+
+    # Document 1: Services Rupella
+    services_content = """
+    SERVICES RUPELLA CONSULTING
+
+    Rupella Consulting est un cabinet de recrutement et conseil RH multi-sectoriel.
+
+    NOS SERVICES:
+
+    1. RECRUTEMENT
+    - Recrutement permanent (CDI)
+    - Recrutement temporaire (CDD, intérim)
+    - Chasse de têtes
+    - Recrutement de masse
+
+    Secteurs: BTP, Tech/IT, Restauration, Industrie, Tertiaire, Commerce, Santé
+
+    2. CONSEIL RH
+    - Audit RH
+    - Définition de postes
+    - Politique salariale
+    - GPEC (Gestion Prévisionnelle des Emplois et Compétences)
+
+    3. FORMATION
+    - Management
+    - Recrutement
+    - Intégration collaborateurs
+
+    4. ACCOMPAGNEMENT
+    - Process de recrutement
+    - Onboarding
+    - Marque employeur
+    """
+
+    with open('rupella_docs/services.txt', 'w', encoding='utf-8') as f:
+        f.write(services_content)
+
+    kb.add_document(
+        'rupella_docs/services.txt',
+        category='services',
+        description='Liste complète des services Rupella Consulting'
+    )
+
+    # Document 2: Tarifs
+    tarifs_content = """
+    GRILLE TARIFAIRE RUPELLA CONSULTING
+
+    RECRUTEMENT PERMANENT:
+    - Profils juniors (0-3 ans): 15% du salaire annuel brut
+    - Profils confirmés (3-8 ans): 18% du salaire annuel brut
+    - Profils seniors (8+ ans): 20-22% du salaire annuel brut
+    - Cadres dirigeants: 25% du salaire annuel brut
+
+    RECRUTEMENT TEMPORAIRE:
+    - Marge intérim standard: 25-35%
+    - Package tout compris
+
+    CONSEIL RH:
+    - Audit RH: à partir de 2 500€
+    - Mission conseil: 800-1 200€/jour
+    - Forfait mensuel: sur devis
+
+    FORMATION:
+    - Inter-entreprises: 800€/jour/personne
+    - Intra-entreprise: 1 500€/jour (jusqu'à 10 personnes)
+
+    GARANTIES:
+    - Période d'essai non validée: remplacement gratuit
+    - Démission < 6 mois: 50% de remise sur nouveau recrutement
+    """
+
+    with open('rupella_docs/tarifs.txt', 'w', encoding='utf-8') as f:
+        f.write(tarifs_content)
+
+    kb.add_document(
+        'rupella_docs/tarifs.txt',
+        category='tarifs',
+        description='Grille tarifaire et conditions commerciales'
+    )
+
+    # Document 3: Process commercial
+    process_content = """
+    PROCESS COMMERCIAL RUPELLA
+
+    ÉTAPE 1: PROSPECTION
+    - Identification cible (secteur, taille, besoin)
+    - Premier contact (LinkedIn, email, téléphone)
+    - Accroche personnalisée
+
+    ÉTAPE 2: QUALIFICATION
+    - Compréhension besoin
+    - Budget disponible
+    - Timing
+    - Décideurs
+
+    ÉTAPE 3: PROPOSITION
+    - Présentation services adaptés
+    - Devis personnalisé
+    - Références clients similaires
+
+    ÉTAPE 4: NÉGOCIATION
+    - Discussion conditions
+    - Ajustements
+    - Réponse aux objections
+
+    ÉTAPE 5: CLOSING
+    - Signature contrat
+    - Lancement mission
+    - Onboarding client
+
+    ÉTAPE 6: SUIVI
+    - Points réguliers
+    - Satisfaction client
+    - Upsell / Cross-sell
+
+    OBJECTIONS FRÉQUENTES:
+
+    "C'est trop cher"
+    → Mettre en avant le ROI, la qualité, les garanties
+
+    "On a déjà un prestataire"
+    → Proposer test sur un poste, comparer résultats
+
+    "Pas le budget"
+    → Proposer paiement échelonné, commencer petit
+
+    "Pas le temps"
+    → On s'occupe de tout, gain de temps immense
+    """
+
+    with open('rupella_docs/process.txt', 'w', encoding='utf-8') as f:
+        f.write(process_content)
+
+    kb.add_document(
+        'rupella_docs/process.txt',
+        category='commercial',
+        description='Process commercial et gestion des objections'
+    )
+
+    logger.info("✅ Base de connaissances initiale créée !")
+    return kb
+
+
+if __name__ == '__main__':
+    # Test de création
+    kb = create_initial_knowledge_base()
+
+    # Test recherche
+    results = kb.search_documents("tarifs")
+    print(f"\n🔍 Résultats pour 'tarifs': {len(results)} documents")
+
+    # Test contexte
+    context = kb.get_context_for_query("Combien coûte un recrutement ?")
+    print(f"\n📚 Contexte extrait:\n{context[:200]}...")
