@@ -1,0 +1,166 @@
+"""
+Module de traitement audio
+Transcription via OpenAI Whisper
+"""
+
+import openai
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class AudioProcessor:
+    """Processeur de fichiers audio"""
+
+    def __init__(self, api_key: str):
+        """
+        Initialisation du processeur audio
+
+        Args:
+            api_key: Clé API OpenAI
+        """
+        openai.api_key = api_key
+        self.supported_formats = ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm', '.ogg']
+        self.max_file_size = 25 * 1024 * 1024  # 25 MB limite Whisper
+
+    def transcribe_audio(self, audio_file_path: str, language: str = "fr") -> str:
+        """
+        Transcrit un fichier audio en texte via Whisper
+
+        Args:
+            audio_file_path: Chemin vers le fichier audio
+            language: Langue de transcription (défaut: français)
+
+        Returns:
+            Texte transcrit ou chaîne vide si erreur
+        """
+        try:
+            # Vérification existence fichier
+            if not os.path.exists(audio_file_path):
+                logger.error(f"Fichier introuvable: {audio_file_path}")
+                return ""
+
+            # Vérification format
+            file_extension = Path(audio_file_path).suffix.lower()
+            if file_extension not in self.supported_formats:
+                logger.error(f"Format non supporté: {file_extension}")
+                return ""
+
+            # Vérification taille
+            file_size = os.path.getsize(audio_file_path)
+            if file_size > self.max_file_size:
+                logger.error(f"Fichier trop volumineux: {file_size / 1024 / 1024:.2f} MB")
+                return ""
+
+            # Transcription via Whisper
+            logger.info(f"Transcription de {audio_file_path}...")
+
+            with open(audio_file_path, 'rb') as audio_file:
+                transcript = openai.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language=language,
+                    response_format="text"
+                )
+
+            logger.info("Transcription réussie")
+            return transcript
+
+        except openai.OpenAIError as e:
+            logger.error(f"Erreur OpenAI Whisper: {e}")
+            return ""
+        except Exception as e:
+            logger.error(f"Erreur transcription audio: {e}")
+            return ""
+
+    def get_audio_duration(self, audio_file_path: str) -> float:
+        """
+        Récupère la durée d'un fichier audio (nécessite pydub)
+
+        Args:
+            audio_file_path: Chemin vers le fichier audio
+
+        Returns:
+            Durée en secondes ou 0 si erreur
+        """
+        try:
+            from pydub import AudioSegment
+
+            file_extension = Path(audio_file_path).suffix.lower().replace('.', '')
+            audio = AudioSegment.from_file(audio_file_path, format=file_extension)
+
+            duration_seconds = len(audio) / 1000.0
+            return duration_seconds
+
+        except ImportError:
+            logger.warning("pydub non installé, durée non disponible")
+            return 0
+        except Exception as e:
+            logger.error(f"Erreur calcul durée: {e}")
+            return 0
+
+    def convert_to_mp3(self, input_file: str, output_file: str = None) -> str:
+        """
+        Convertit un fichier audio en MP3 (nécessite pydub + ffmpeg)
+
+        Args:
+            input_file: Fichier audio source
+            output_file: Fichier MP3 de sortie (optionnel)
+
+        Returns:
+            Chemin du fichier MP3 ou chaîne vide si erreur
+        """
+        try:
+            from pydub import AudioSegment
+
+            if output_file is None:
+                base_name = Path(input_file).stem
+                output_file = f"{base_name}.mp3"
+
+            file_extension = Path(input_file).suffix.lower().replace('.', '')
+            audio = AudioSegment.from_file(input_file, format=file_extension)
+
+            audio.export(output_file, format="mp3")
+            logger.info(f"Conversion en MP3 réussie: {output_file}")
+
+            return output_file
+
+        except ImportError:
+            logger.warning("pydub non installé, conversion impossible")
+            return input_file
+        except Exception as e:
+            logger.error(f"Erreur conversion MP3: {e}")
+            return input_file
+
+    def validate_audio_file(self, file_path: str) -> tuple[bool, str]:
+        """
+        Valide un fichier audio avant traitement
+
+        Args:
+            file_path: Chemin du fichier à valider
+
+        Returns:
+            Tuple (valide: bool, message: str)
+        """
+        # Vérification existence
+        if not os.path.exists(file_path):
+            return False, "Fichier introuvable"
+
+        # Vérification extension
+        file_extension = Path(file_path).suffix.lower()
+        if file_extension not in self.supported_formats:
+            return False, f"Format non supporté. Formats acceptés: {', '.join(self.supported_formats)}"
+
+        # Vérification taille
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            return False, "Fichier vide"
+
+        if file_size > self.max_file_size:
+            max_mb = self.max_file_size / 1024 / 1024
+            file_mb = file_size / 1024 / 1024
+            return False, f"Fichier trop volumineux ({file_mb:.1f} MB). Maximum: {max_mb} MB"
+
+        return True, "Fichier valide"
