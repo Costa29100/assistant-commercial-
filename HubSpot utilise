@@ -1,0 +1,311 @@
+"""
+Module de gestion HubSpot API
+Gestion contacts, deals, notes et recherches
+"""
+
+import requests
+import logging
+from typing import List, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class HubSpotManager:
+    """Gestionnaire API HubSpot"""
+
+    def __init__(self, api_key: str):
+        """
+        Initialisation du gestionnaire HubSpot
+
+        Args:
+            api_key: Clé API HubSpot (Private App Token)
+        """
+        self.api_key = api_key
+        self.base_url = "https://api.hubapi.com"
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+    def get_open_deals(self, limit: int = 50) -> List[Dict]:
+        """
+        Récupère les deals ouverts
+
+        Args:
+            limit: Nombre maximum de deals à récupérer
+
+        Returns:
+            Liste des deals ouverts
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/deals"
+            params = {
+                "limit": limit,
+                "properties": "dealname,amount,dealstage,closedate",
+                "archived": "false"
+            }
+
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+            return data.get('results', [])
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur récupération deals: {e}")
+            return []
+
+    def search_contacts(self, search_term: str) -> List[Dict]:
+        """
+        Recherche des contacts par nom, prénom ou email
+
+        Args:
+            search_term: Terme de recherche
+
+        Returns:
+            Liste des contacts trouvés
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/contacts/search"
+
+            payload = {
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "firstname",
+                                "operator": "CONTAINS_TOKEN",
+                                "value": search_term
+                            }
+                        ]
+                    },
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "lastname",
+                                "operator": "CONTAINS_TOKEN",
+                                "value": search_term
+                            }
+                        ]
+                    },
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "email",
+                                "operator": "CONTAINS_TOKEN",
+                                "value": search_term
+                            }
+                        ]
+                    }
+                ],
+                "properties": ["firstname", "lastname", "email", "company", "phone"],
+                "limit": 10
+            }
+
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+
+            data = response.json()
+            return data.get('results', [])
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur recherche contacts: {e}")
+            return []
+
+    def get_contact_by_id(self, contact_id: str) -> Optional[Dict]:
+        """
+        Récupère un contact par son ID
+
+        Args:
+            contact_id: ID du contact HubSpot
+
+        Returns:
+            Données du contact ou None
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/contacts/{contact_id}"
+            params = {
+                "properties": "firstname,lastname,email,company,phone"
+            }
+
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+
+            return response.json()
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur récupération contact: {e}")
+            return None
+
+    def add_note_to_contact(self, contact_id: str, note_text: str) -> bool:
+        """
+        Ajoute une note à un contact
+
+        Args:
+            contact_id: ID du contact HubSpot
+            note_text: Texte de la note
+
+        Returns:
+            True si succès, False sinon
+        """
+        try:
+            # Création de la note (engagement)
+            url = f"{self.base_url}/crm/v3/objects/notes"
+
+            payload = {
+                "properties": {
+                    "hs_note_body": note_text,
+                    "hs_timestamp": self._get_timestamp()
+                }
+            }
+
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+
+            note_data = response.json()
+            note_id = note_data.get('id')
+
+            # Association de la note au contact
+            assoc_url = f"{self.base_url}/crm/v3/objects/notes/{note_id}/associations/contacts/{contact_id}/note_to_contact"
+
+            assoc_response = requests.put(assoc_url, headers=self.headers)
+            assoc_response.raise_for_status()
+
+            logger.info(f"Note ajoutée au contact {contact_id}")
+            return True
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur ajout note: {e}")
+            return False
+
+    def create_deal(self, deal_name: str, amount: float, stage: str = "appointmentscheduled") -> Optional[str]:
+        """
+        Crée un nouveau deal
+
+        Args:
+            deal_name: Nom du deal
+            amount: Montant du deal
+            stage: Étape du pipeline (par défaut: appointmentscheduled)
+
+        Returns:
+            ID du deal créé ou None
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/deals"
+
+            payload = {
+                "properties": {
+                    "dealname": deal_name,
+                    "amount": str(amount),
+                    "dealstage": stage,
+                    "pipeline": "default"
+                }
+            }
+
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+
+            data = response.json()
+            deal_id = data.get('id')
+
+            logger.info(f"Deal créé: {deal_id}")
+            return deal_id
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur création deal: {e}")
+            return None
+
+    def create_task(self, subject: str, contact_id: Optional[str] = None, due_date: Optional[str] = None) -> bool:
+        """
+        Crée une tâche HubSpot
+
+        Args:
+            subject: Sujet de la tâche
+            contact_id: ID du contact associé (optionnel)
+            due_date: Date d'échéance au format timestamp (optionnel)
+
+        Returns:
+            True si succès, False sinon
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/tasks"
+
+            properties = {
+                "hs_task_subject": subject,
+                "hs_task_status": "NOT_STARTED",
+                "hs_task_priority": "MEDIUM"
+            }
+
+            if due_date:
+                properties["hs_timestamp"] = due_date
+
+            payload = {"properties": properties}
+
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+
+            if contact_id:
+                task_data = response.json()
+                task_id = task_data.get('id')
+
+                # Association tâche -> contact
+                assoc_url = f"{self.base_url}/crm/v3/objects/tasks/{task_id}/associations/contacts/{contact_id}/task_to_contact"
+                requests.put(assoc_url, headers=self.headers)
+
+            logger.info(f"Tâche créée: {subject}")
+            return True
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur création tâche: {e}")
+            return False
+
+    def get_company_by_name(self, company_name: str) -> Optional[Dict]:
+        """
+        Recherche une entreprise par nom
+
+        Args:
+            company_name: Nom de l'entreprise
+
+        Returns:
+            Données de l'entreprise ou None
+        """
+        try:
+            url = f"{self.base_url}/crm/v3/objects/companies/search"
+
+            payload = {
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "name",
+                                "operator": "CONTAINS_TOKEN",
+                                "value": company_name
+                            }
+                        ]
+                    }
+                ],
+                "properties": ["name", "domain", "industry"],
+                "limit": 1
+            }
+
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+
+            data = response.json()
+            results = data.get('results', [])
+
+            return results[0] if results else None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur recherche entreprise: {e}")
+            return None
+
+    def _get_timestamp(self) -> str:
+        """
+        Retourne le timestamp actuel en millisecondes
+
+        Returns:
+            Timestamp au format string
+        """
+        from datetime import datetime
+        return str(int(datetime.now().timestamp() * 1000))
