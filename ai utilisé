@@ -1,0 +1,400 @@
+"""
+Module de gestion IA via Groq (GRATUIT)
+Conversations avec base de connaissances, résumés d'appels, rédaction commerciale
+"""
+
+import requests
+import logging
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class AIAssistant:
+    """Assistant IA conversationnel avec Groq (gratuit) et base de connaissances"""
+
+    def __init__(self, api_key: str):
+        """
+        Initialisation de l'assistant IA
+
+        Args:
+            api_key: Clé API Groq (gratuite)
+        """
+        self.api_key = api_key
+        self.base_url = "https://api.groq.com/openai/v1"
+        self.model = "llama-3.3-70b-versatile"  # Modèle gratuit et performant
+
+        self.system_prompt = """Tu es l'assistant IA personnel de l'équipe commerciale Rupella Consulting.
+
+🎯 Ta mission :
+- Aider l'équipe dans son activité commerciale quotidienne
+- Rédiger des messages professionnels, relances, emails
+- Répondre à leurs questions sur la prospection, les produits, les objections
+- Analyser et résumer les appels commerciaux
+- Être un vrai partenaire de travail
+
+💼 Contexte Rupella Consulting :
+- Entreprise spécialisée en recrutement et conseil
+- Secteurs : TOUS corps de métiers (BTP, Tech/IT, Restauration, Industrie, Tertiaire, Commerce, Santé, etc.)
+- Services : recrutement, intérim, formation, conseil RH
+- Approche multi-sectorielle et flexible
+
+🗣️ Ton style :
+- Professionnel mais humain et fluide
+- Ton collaboratif, comme un collègue
+- Direct et concret
+- Tu tutoies les utilisateurs
+- Tu termines chaque message par : — Ton assistant Rupella IA
+
+⚠️ Règles importantes :
+- Reste dans le contexte commercial/professionnel
+- Sois précis et actionnable
+- Propose des solutions concrètes
+- Quand tu as des informations de la base de connaissances, utilise-les en priorité
+- Si une information est dans la base de connaissances, cite-la naturellement
+- Si tu ne sais pas : propose de chercher ou demande des précisions
+"""
+
+    def chat(self, user_message: str, context: Optional[Dict] = None,
+             knowledge_context: str = "") -> str:
+        """
+        Conversation avec l'assistant IA (avec base de connaissances)
+
+        Args:
+            user_message: Message de l'utilisateur
+            context: Contexte de conversation (optionnel)
+            knowledge_context: Contexte de la base de connaissances (optionnel)
+
+        Returns:
+            Réponse de l'IA
+        """
+        try:
+            # Enrichissement du system prompt avec la base de connaissances
+            enhanced_system_prompt = self.system_prompt
+
+            if knowledge_context:
+                enhanced_system_prompt += f"""
+
+📚 BASE DE CONNAISSANCES RUPELLA :
+{knowledge_context}
+
+IMPORTANT :
+- Ces informations sont officielles et à jour
+- Utilise-les en priorité pour répondre
+- Si l'information est dans la base, cite-la naturellement
+- Adapte ces informations au contexte de la question
+- Sois précis avec les chiffres et détails
+"""
+
+            messages = [
+                {"role": "system", "content": enhanced_system_prompt},
+                {"role": "user", "content": user_message}
+            ]
+
+            # Ajout contexte de conversation si disponible
+            if context and context.get('last_message'):
+                messages.insert(1, {
+                    "role": "assistant",
+                    "content": f"Contexte de la conversation précédente : {context['last_message']}"
+                })
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 1200
+            }
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            return data['choices'][0]['message']['content'].strip()
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur IA chat: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            return "Désolé, j'ai rencontré une erreur technique. Peux-tu reformuler ?"
+
+    def generate_call_summary(self, transcription: str) -> str:
+        """
+        Génère un résumé structuré d'appel commercial
+
+        Args:
+            transcription: Transcription textuelle de l'appel ou description
+
+        Returns:
+            Résumé structuré de l'appel
+        """
+        try:
+            prompt = f"""Analyse cette transcription ou description d'appel commercial et génère un résumé structuré professionnel.
+
+TRANSCRIPTION/DESCRIPTION :
+{transcription}
+
+FORMAT ATTENDU :
+🎧 Appel avec [Nom/Entreprise] – [Durée estimée]
+✅ Objectif : [objectif de l'appel]
+🗣️ Points clés : [liste des points importants, besoins exprimés, objections]
+🔁 Suivi : [prochaines étapes, rappels planifiés, actions à faire]
+
+Sois concis, professionnel et orienté action. Extrais les informations essentielles.
+"""
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system",
+                     "content": "Tu es un expert en analyse d'appels commerciaux. Tu structures les informations de manière claire et actionnable."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.5,
+                "max_tokens": 800
+            }
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            return data['choices'][0]['message']['content'].strip()
+
+        except Exception as e:
+            logger.error(f"Erreur génération résumé appel: {e}")
+            return "❌ Erreur lors de la génération du résumé."
+
+    def generate_follow_up_message(self, contact_name: str, context: str,
+                                   knowledge_context: str = "") -> str:
+        """
+        Génère un message de relance personnalisé
+
+        Args:
+            contact_name: Nom du contact
+            context: Contexte de la relance
+            knowledge_context: Informations Rupella pertinentes (optionnel)
+
+        Returns:
+            Message de relance rédigé
+        """
+        try:
+            enhanced_prompt = f"""Rédige un message de relance professionnel pour {contact_name}.
+
+CONTEXTE :
+{context}
+"""
+
+            if knowledge_context:
+                enhanced_prompt += f"""
+
+INFORMATIONS RUPELLA À UTILISER SI PERTINENT :
+{knowledge_context}
+"""
+
+            enhanced_prompt += """
+
+Le message doit être :
+- Court et percutant (3-4 phrases max)
+- Personnalisé et chaleureux
+- Avec un call-to-action clair
+- Format email ou LinkedIn
+- Ton professionnel mais accessible
+
+Ne mets pas d'objet, juste le corps du message.
+"""
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": enhanced_prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 500
+            }
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            return data['choices'][0]['message']['content'].strip()
+
+        except Exception as e:
+            logger.error(f"Erreur génération relance: {e}")
+            return "❌ Erreur lors de la génération du message."
+
+    def generate_cold_outreach(self, industry: str, value_proposition: str = "",
+                               knowledge_context: str = "") -> str:
+        """
+        Génère un message d'accroche à froid
+
+        Args:
+            industry: Secteur d'activité cible
+            value_proposition: Proposition de valeur (optionnel)
+            knowledge_context: Informations Rupella sectorielles (optionnel)
+
+        Returns:
+            Message d'accroche rédigé
+        """
+        try:
+            base_value = "Rupella Consulting accompagne les entreprises de TOUS secteurs (BTP, Tech, Restauration, Industrie, etc.) dans leurs recrutements et gestion RH."
+            value = value_proposition if value_proposition else base_value
+
+            prompt = f"""Rédige un message d'accroche commercial à froid pour contacter des entreprises du secteur {industry}.
+
+PROPOSITION DE VALEUR GÉNÉRALE :
+{value}
+"""
+
+            if knowledge_context:
+                prompt += f"""
+
+INFORMATIONS SPÉCIFIQUES RUPELLA POUR CE SECTEUR :
+{knowledge_context}
+
+Utilise ces informations pour personnaliser le message au secteur {industry}.
+"""
+
+            prompt += """
+
+Le message doit être :
+- Court (4-5 lignes max)
+- Personnalisé au secteur ciblé
+- Créer de la curiosité
+- Proposer un échange court (15-20 min)
+- Ton professionnel mais accessible
+- Mentionner une statistique ou référence si pertinent
+
+Format : message LinkedIn ou email direct.
+"""
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 500
+            }
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            return data['choices'][0]['message']['content'].strip()
+
+        except Exception as e:
+            logger.error(f"Erreur génération accroche: {e}")
+            return "❌ Erreur lors de la génération du message."
+
+    def handle_objection(self, objection: str, knowledge_context: str = "") -> str:
+        """
+        Propose une réponse à une objection commerciale
+
+        Args:
+            objection: Objection du prospect
+            knowledge_context: Informations Rupella pour répondre (optionnel)
+
+        Returns:
+            Suggestion de réponse
+        """
+        try:
+            prompt = f"""Un prospect a formulé cette objection :
+"{objection}"
+"""
+
+            if knowledge_context:
+                prompt += f"""
+
+INFORMATIONS RUPELLA POUR RÉPONDRE :
+{knowledge_context}
+
+Utilise ces informations concrètes pour construire ta réponse.
+"""
+
+            prompt += """
+
+Propose 2-3 façons de répondre à cette objection de manière professionnelle et convaincante.
+
+Utilise la méthode :
+1. Écoute / Reformulation (montrer qu'on comprend)
+2. Réponse argumentée (avec faits, chiffres, exemples)
+3. Question de rebond (pour avancer)
+
+Sois concret, facile à utiliser, et orienté résultat.
+"""
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 800
+            }
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            return data['choices'][0]['message']['content'].strip()
+
+        except Exception as e:
+            logger.error(f"Erreur traitement objection: {e}")
+            return "❌ Erreur lors du traitement de l'objection."
